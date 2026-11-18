@@ -1,0 +1,435 @@
+%% Informe técnico del Proyecto Final, Electiva en Ingeniería de Software
+%% Universidad de San Buenaventura Cali, plantilla elsarticle (preprint, 12pt)
+\documentclass[preprint,12pt]{elsarticle}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,es-tabla,es-nodecimaldot]{babel}
+\spanishdeactivate{<>}
+\usepackage{amssymb}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage[labelsep=period]{caption}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\setlength{\emergencystretch}{2em}
+\setlength{\textfloatsep}{10pt plus 2pt minus 2pt}
+\setlength{\floatsep}{8pt plus 2pt minus 2pt}
+\setlength{\intextsep}{8pt plus 2pt minus 2pt}
+
+\journal{Electiva en Ingeniería de Software}
+\abstracttitle{Resumen}
+\keywordtitle{Palabras clave}
+\usepackage{etoolbox}
+\makeatletter
+\patchcmd{\ps@pprintTitle}{Preprint submitted to}{Documento presentado a}{}{\PackageWarning{informe}{No se pudo cambiar el pie de página}}
+\makeatother
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Clasificación de especies de árboles urbanos con aprendizaje profundo sobre nubes de puntos LiDAR aéreas}
+
+\author{Julian David Fuentes Granja}
+\affiliation{organization={Facultad de Ingeniería, Universidad de San Buenaventura Cali},
+            city={Cali},
+            country={Colombia}}
+
+\begin{abstract}
+El inventario del arbolado urbano con censos de campo es lento y costoso, y las imágenes aéreas 2D no capturan la estructura vertical de la copa. Este trabajo clasifica la especie de árboles urbanos aislados a partir de nubes de puntos LiDAR aéreas usando el dataset público UrbanTree3D, que tiene 152 árboles de seis especies con etiquetas validadas en campo. Se compararon PointNet, PointNet++ y DGCNN con un bosque aleatorio sobre descriptores geométricos en cuatro experimentos, que son la partición oficial del dataset, el efecto del número de puntos por árbol, el uso de la intensidad y los retornos del LiDAR y una validación cruzada estratificada de cinco pliegues repetida tres veces con pruebas estadísticas corregidas. En la partición oficial DGCNN alcanzó un F1 macro de 0.964, pero en la validación cruzada la misma red bajó a 0.841, lo que muestra que esa partición da cifras optimistas. La mejora más clara vino de los atributos del sensor, con los que PointNet llegó a una exactitud de 0.928 y un F1 macro de 0.914 en validación cruzada, frente a 0.853 del mejor bosque aleatorio. Con 152 árboles, las pruebas con corrección de Holm solo confirmaron que PointNet++ sin atributos es inferior a las dos mejores redes con atributos. El código y los resultados están en un notebook ejecutable publicado en un repositorio público.
+\end{abstract}
+
+\begin{keyword}
+Nubes de puntos \sep Aprendizaje profundo \sep Arbolado urbano \sep Clasificación de especies \sep LiDAR aéreo
+\end{keyword}
+
+\end{frontmatter}
+
+%% =====================================================================
+\section{Introducción y descripción del problema}
+\label{sec:intro}
+
+El inventario de la vegetación urbana sirve para evaluar la salud ambiental, el riesgo de caída de árboles y la planeación de la siembra. Los árboles urbanos sostienen parte de la biodiversidad de las ciudades \cite{jovanovic2025urbantrees}, y para gestionarlos hay que saber dónde está cada uno y de qué especie es. Ese dato se ha levantado con censos manuales en terreno, que son lentos y caros, o con fotografías aéreas 2D, que sufren por las sombras y no capturan el volumen, la forma de la copa ni la altura. El LiDAR aerotransportado resuelve esa limitación porque entrega la geometría tridimensional de la ciudad, y en contextos urbanos sigue siendo más preciso que los productos globales de altura de dosel \cite{dong2025highprecision}.
+
+La entrada del sistema es una nube de puntos desordenada $P=\{p_1,\dots,p_n\}$, donde cada punto tiene coordenadas $(x_i,y_i,z_i)$ y atributos del sensor como la intensidad $I_i$ y el número de retorno $r_i$.
+\begin{equation}
+P = \{p_i\}_{i=1}^{n}, \qquad p_i = (x_i, y_i, z_i, I_i, r_i).
+\label{eq:pointcloud}
+\end{equation}
+El problema completo tiene dos etapas, y la primera separa la nube de la escena en $K$ árboles individuales con una función de asignación $s$, donde $k=0$ representa el fondo.
+\begin{equation}
+s : P \rightarrow \{0, 1, \dots, K\}, \qquad P_k = \{p_i \in P : s(p_i) = k\}.
+\label{eq:instancias}
+\end{equation}
+La segunda asigna una especie a cada árbol aislado con una red neuronal $f_\theta$ de parámetros $\theta$.
+\begin{equation}
+f_\theta : P_k \rightarrow \{1, \dots, C\}, \qquad C = 6.
+\label{eq:clasificacion}
+\end{equation}
+
+El dataset usado, UrbanTree3D, ya trae resuelta la primera etapa porque sus autores aislaron cada árbol con DBSCAN y Watershed \cite{hamdani2026hybrid,hamdani2026urbantree3d}, así que este trabajo se concentra en la ecuación~\eqref{eq:clasificacion}. El alcance se ajustó frente a la primera entrega, que planteaba una segmentación por punto, porque UrbanTree3D tiene una etiqueta de especie por árbol y no por punto.
+
+El trabajo compara tres arquitecturas de puntos con un baseline clásico, mide el efecto del número de puntos y de los atributos del sensor y evalúa los métodos con validación cruzada repetida y pruebas estadísticas corregidas. El notebook ejecutado y los resultados del entrenamiento están en el repositorio público \url{https://github.com/JDav19/arbolado-urbantree3d}.
+
+%% =====================================================================
+\section{Estado del arte}
+\label{sec:estado-arte}
+
+\subsection{Aprendizaje profundo sobre nubes de puntos}
+
+El procesamiento de nubes de puntos pasó de convertir los datos a vóxeles o a proyecciones 2D a trabajar directamente sobre conjuntos desordenados de puntos, una evolución que Guo et al. organizaron en una revisión de clasificación, detección y segmentación \cite{guo2021survey}. PointNet fue la primera red en aplicar un perceptrón compartido a cada punto y juntar el resultado con un máximo simétrico, lo que la hace invariante al orden de los puntos \cite{qi2017pointnet}, aunque no modela vecindarios locales. PointNet++ corrigió esa limitación con una jerarquía de agrupamientos por radio que aplica PointNet de forma recursiva \cite{qi2017pointnetpp}, y DGCNN propone la convolución de aristas EdgeConv sobre un grafo de vecinos que se recalcula en el espacio de características de cada capa \cite{wang2019dgcnn}.
+
+PointNeXt mostró que buena parte de la ventaja de los modelos recientes viene de la forma de entrenarlos, porque el mismo PointNet++ pasó de 77.9\,\% a 86.1\,\% de exactitud en ScanObjectNN solo con mejores aumentos de datos y una mejor optimización \cite{qian2022pointnext}.
+
+\subsection{LiDAR y arbolado urbano}
+
+El LiDAR de UAV permite identificar la estructura vertical de la vegetación urbana \cite{yang2026vertical}, y la fusión con imágenes SAR y ópticas mejora el LiDAR aéreo sobre zonas con vegetación \cite{marks2025attention}. Man et al. encontraron que el LiDAR de UAV segmenta mejor los árboles urbanos que las nubes fotogramétricas \cite{man2025urban}. En UrbanTree3D los árboles se aislaron con DBSCAN y Watershed \cite{hamdani2026hybrid}, y los errores de esa etapa dejan en algunas nubes puntos que no son del árbol.
+
+\subsection{Clasificación de especies}
+
+Fassnacht et al. revisaron décadas de clasificación de especies con sensores remotos y advirtieron que muchos estudios solo comparan algoritmos sin una pregunta clara, lo que deja resultados difíciles de generalizar \cite{fassnacht2016review}.
+
+Con LiDAR terrestre, Seidel et al. clasificaron siete especies con una CNN sobre imágenes 2D derivadas de las nubes y lograron cerca de 86\,\% de exactitud, un resultado mejor y más rápido que el de PointNet en su estudio \cite{seidel2021species}, y Liu et al. compararon varias redes de puntos con el mismo tipo de sensor \cite{liu2022ground}. Puliti et al. publicaron FOR-species20K, con más de 20\,000 árboles de 33 especies, y encontraron que los modelos multivista promediaron 0.77 de exactitud frente a 0.72 de los modelos sobre nubes de puntos \cite{puliti2025forspecies}.
+
+Con LiDAR aéreo o de UAV, Briechle et al. usaron PointNet++ para distinguir pino, abedul, aliso y árboles muertos en pie, con 90.2\,\% de exactitud frente a 85.3\,\% de un bosque aleatorio \cite{briechle2020pointnetpp}. Murray et al. estimaron la composición de especies de un bosque boreal con modelos de puntos \cite{murray2024composition}, y en un trabajo posterior combinaron la nube con métricas derivadas en una red de doble flujo sobre 16\,269 árboles, lo que mejoró la clasificación y alcanzó un F1 ponderado de 0.70 \cite{murray2025dualstream}. Wang et al. clasificaron especies con LiDAR aéreo multiespectral de baja densidad, con menos de 30 puntos por m$^2$, usando un transformer que aprovecha los atributos de cada punto \cite{wang2024rse}, y Vahrenhold et al. propusieron una red multimodal que combina la nube, la forma de onda completa y descriptores derivados \cite{vahrenhold2025mmtscnet}.
+
+Taher et al. compararon algoritmos clásicos y de aprendizaje profundo con LiDAR aéreo multiespectral y encontraron que con datos de alta densidad un Point Transformer obtuvo 87.9\,\% de exactitud global con 1\,065 segmentos de entrenamiento, mientras que con datos más dispersos el bosque aleatorio quedó primero con 79.9\,\%, apenas por encima del Point Transformer con 79.6\,\% \cite{taher2026msals}. En árboles urbanos, Hamdani et al. compararon PointNet, DGCNN y RandLA-Net con LiDAR multiespectral y PointNet obtuvo la mejor exactitud en prueba, con 82.07\,\% \cite{hamdani2026classification}, y Pacheco-Prado et al. compararon un bosque aleatorio con PointNet usando nubes de copa en color \cite{pacheco2025urban}.
+
+\subsection{Número de puntos y atributos del sensor}
+
+Las redes de puntos reciben un número fijo de puntos por árbol, y Zhang et al. probaron varios tamaños de muestreo con LiDAR de UAV y encontraron que el mejor rango estaba entre 1\,024 y 2\,048 puntos \cite{zhang2025uav}. El descriptor de UrbanTree3D usó 8\,192 puntos \cite{hamdani2026urbantree3d}, aunque la mediana de sus árboles es de 429. Sobre los atributos, Briechle et al. \cite{briechle2020pointnetpp}, Wang et al. \cite{wang2024rse} y Vahrenhold et al. \cite{vahrenhold2025mmtscnet} coinciden en que la información del sensor complementa la geometría, aunque sus datos son de mayor densidad o multiespectrales.
+
+\subsection{Métricas}
+
+Las métricas habituales son la exactitud global, el F1 macro y la exactitud balanceada. Con clases desbalanceadas la exactitud favorece a la especie mayoritaria, y por eso aquí el F1 macro es la métrica principal.
+
+\subsection{Vacío que atiende este trabajo}
+
+La revisión muestra tres vacíos que este trabajo busca cubrir. Los resultados más altos vienen de datasets grandes, terrestres o multiespectrales \cite{puliti2025forspecies,taher2026msals}, y hay pocas evaluaciones sobre árboles urbanos con LiDAR aéreo monoespectral y validación en campo. La comparación con descriptores clásicos es poco frecuente, aunque el bosque aleatorio sigue siendo una referencia fuerte \cite{briechle2020pointnetpp,taher2026msals}. Además, el único estudio publicado con UrbanTree3D usa PointNet++ con 8\,192 puntos, reporta exactitud de validación y no compara otras arquitecturas ni usa pruebas de significancia \cite{hamdani2026urbantree3d}.
+
+%% =====================================================================
+\section{Metodología}
+\label{sec:metodos}
+
+\subsection{Dataset}
+\label{sec:dataset}
+
+Se usa UrbanTree3D \cite{hamdani2026urbantree3d}, publicado en la revista \textit{Data} y alojado en Zenodo, cuya ficha técnica está en la Tabla~\ref{tab:ficha}. Las cifras de puntos y de altura las calcula el notebook sobre los archivos descargados.
+
+\begin{table}[!htbp]
+\centering
+\small
+\begin{tabular}{>{\raggedright\arraybackslash}p{3.0cm} >{\raggedright\arraybackslash}p{9.7cm}}
+\toprule
+Campo & Descripción \\
+\midrule
+DOI & 10.5281/zenodo.19475932, descriptor en \textit{Data} 11(6), 147 \\
+Origen & LiDAR aéreo del IGN de Francia e inventario de campo de Grand Paris Sud con validación en terreno \\
+Registros & 152 árboles, un archivo LAS por árbol \\
+Puntos por árbol & Entre 61 y 3\,739, con mediana de 429 y media de 847 \\
+Altura & Según el inventario, entre 3.1 y 16.8 m con media de 8.9 m. Medida sobre la nube, entre 1.8 y 17.2 m con media de 7.4 m \\
+Clases & \textit{Aesculus hippocastanum} (62), \textit{Prunus serrulata} (12), \textit{Pyrus calleryana} (15), \textit{Salix alba} (23), \textit{Tilia platyphyllos} (25) y \textit{Tilia $\times$ europaea} (15) \\
+Atributos por punto & Coordenadas $X$, $Y$, $Z$, intensidad, número de retorno, total de retornos y clase ASPRS \\
+Partición oficial & 104 árboles de entrenamiento, 22 de validación y 26 de prueba, estratificada por especie \\
+Licencia & CC BY 4.0, acceso público sin registro \\
+\bottomrule
+\end{tabular}
+\caption{Ficha técnica de UrbanTree3D.}
+\label{tab:ficha}
+\end{table}
+
+Su principal limitación es el tamaño, porque en la partición oficial algunas especies solo tienen dos o tres árboles de prueba.
+
+\subsection{Preprocesamiento y aumento de datos}
+
+Las nubes vienen filtradas y con la altura normalizada por los autores del dataset \cite{hamdani2026urbantree3d}. Para las redes, cada árbol se centra en su centroide y se escala a la esfera unitaria, de modo que la red recibe la forma y no el tamaño, y se muestrean $n$ puntos por árbol, con reemplazo cuando el árbol tiene menos. En entrenamiento la muestra cambia en cada época, mientras que en validación y prueba se fija con una semilla constante para que todos los modelos vean los mismos puntos.
+
+Durante el entrenamiento cada árbol se rota al azar alrededor del eje vertical, se escala por eje con un factor entre 0.85 y 1.15, recibe ruido gaussiano de desviación 0.01 y pierde hasta 20\,\% de sus puntos. En la variante con atributos se agregan tres canales por punto, que son el logaritmo de la intensidad estandarizado con la media y la desviación del conjunto de entrenamiento, la razón entre el número de retorno y el total de retornos, y el total de retornos dividido entre ocho.
+
+\subsection{Arquitecturas}
+
+Las tres redes se implementaron en PyTorch, se muestran en la Figura~\ref{fig:arq} y comparten una cabeza de clasificación con capas de 512 y 256 unidades, normalización por lote y \textit{dropout} de 0.4.
+
+\begin{figure}[!htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\footnotesize,
+  caja/.style={draw, rounded corners=2pt, minimum height=0.95cm, minimum width=1.9cm, align=center, fill=blue!7},
+  glob/.style={draw, rounded corners=2pt, minimum height=0.95cm, minimum width=1.9cm, align=center, fill=orange!15},
+  sal/.style={draw, rounded corners=2pt, minimum height=0.95cm, minimum width=1.9cm, align=center, fill=green!12},
+  flecha/.style={-{Stealth[length=2mm]}, thick}
+]
+\node[font=\bfseries, anchor=west] at (-1,2.6) {PointNet};
+\node[caja] (a0) at (0,1.6) {Entrada\\$n\times d$};
+\node[caja, right=0.4cm of a0] (a1) {MLP\\64, 128, 1024};
+\node[glob, right=0.4cm of a1] (a2) {Máximo\\global};
+\node[caja, right=0.4cm of a2] (a3) {FC\\512, 256};
+\node[sal, right=0.4cm of a3] (a4) {Logits\\6};
+\foreach \i/\j in {a0/a1,a1/a2,a2/a3,a3/a4} \draw[flecha] (\i) -- (\j);
+
+\node[font=\bfseries, anchor=west] at (-1,0.45) {PointNet++};
+\node[caja] (b0) at (0,-0.55) {Entrada\\$n\times d$};
+\node[caja, right=0.4cm of b0] (b1) {SA1\\256 centros\\$r=0.2$, 32 vec.};
+\node[caja, right=0.4cm of b1] (b2) {SA2\\64 centros\\$r=0.4$, 32 vec.};
+\node[glob, right=0.4cm of b2] (b3) {MLP 256, 512,\\1024 y máximo};
+\node[caja, right=0.4cm of b3] (b4) {FC\\512, 256};
+\node[sal, right=0.4cm of b4] (b5) {Logits\\6};
+\foreach \i/\j in {b0/b1,b1/b2,b2/b3,b3/b4,b4/b5} \draw[flecha] (\i) -- (\j);
+
+\node[font=\bfseries, anchor=west] at (-1,-1.7) {DGCNN};
+\node[caja] (c0) at (0,-2.7) {Entrada\\$n\times d$};
+\node[caja, right=0.4cm of c0] (c1) {EdgeConv\\64, $k=16$};
+\node[caja, right=0.4cm of c1] (c2) {EdgeConv\\64, $k=16$};
+\node[caja, right=0.4cm of c2] (c3) {EdgeConv\\128, $k=16$};
+\node[glob, right=0.4cm of c3] (c4) {Conv 1024,\\máximo y media};
+\node[caja, right=0.4cm of c4] (c5) {FC\\512, 256};
+\node[sal, right=0.4cm of c5] (c6) {Logits\\6};
+\foreach \i/\j in {c0/c1,c1/c2,c2/c3,c3/c4,c4/c5,c5/c6} \draw[flecha] (\i) -- (\j);
+\end{tikzpicture}}
+\caption{Arquitecturas comparadas. $n$ es el número de puntos y $d$ los canales por punto, 3 con solo coordenadas y 6 con atributos. SA es una capa de abstracción de conjuntos, FC una capa totalmente conectada y $r$ el radio de agrupamiento.}
+\label{fig:arq}
+\end{figure}
+
+\textbf{PointNet} transforma cada punto con un perceptrón compartido de 64, 128 y 1\,024 canales, obtiene un vector global con un máximo sobre los puntos y tiene 0.80 millones de parámetros. \textbf{PointNet++} usa dos capas de abstracción de conjuntos, y en cada una elige centros con muestreo del punto más lejano y agrupa hasta 32 vecinos con una consulta por radio, como en el artículo original \cite{qi2017pointnetpp}. Se usó la consulta por radio porque con nubes sobremuestreadas los 32 vecinos más cercanos serían copias del mismo punto y la red perdería la forma local, algo que se observó en una primera versión del código. Esta red tiene 1.46 millones de parámetros. \textbf{DGCNN} aplica tres capas EdgeConv sobre un grafo de 16 vecinos recalculado en cada capa, concatena sus salidas, las proyecta a 1\,024 canales, combina el máximo y la media globales y tiene 1.47 millones de parámetros.
+
+\subsection{Baseline clásico}
+
+El baseline es un bosque aleatorio \cite{breiman2001rf} de 500 árboles con pesos de clase balanceados, que siempre recibe la intensidad y los retornos del LiDAR. La variante sin escala usa 27 descriptores independientes del tamaño, entre ellos percentiles de altura normalizada, un histograma vertical de diez cajas, los valores propios normalizados de la covarianza, estadísticos del radio de copa y la media y la desviación de la intensidad y de los retornos. La variante con escala agrega la altura, el ancho de copa, su relación y el logaritmo del número de puntos, para un total de 31 descriptores.
+
+\subsection{Entrenamiento}
+
+Las redes se entrenan con entropía cruzada ponderada, donde el peso de la especie $c$ es la raíz cuadrada de la razón entre el promedio de ejemplos por clase y los ejemplos de esa clase.
+\begin{equation}
+\mathcal{L}(\theta) = -\frac{1}{B}\sum_{b=1}^{B} w_{y_b}\,\log \hat{p}_\theta\!\left(y_b \mid P_b\right), \qquad w_c = \sqrt{\frac{n}{C\,n_c}},
+\label{eq:loss}
+\end{equation}
+donde $B$ es el tamaño del lote, $n$ el total de árboles de entrenamiento y $n_c$ los de la especie $c$. Se usa Adam \cite{kingma2015adam} con tasa inicial de $10^{-3}$, decaimiento de pesos de $10^{-4}$, un programa coseno de 100 épocas y lotes de 16 árboles, y las 100 épocas se eligieron para acercarse a las 105 del descriptor del dataset. En cada época se mide el F1 macro de validación y se conserva el mejor modelo, y como con 22 árboles de validación ese F1 llega a 1.0 en varias épocas, los empates se resuelven con la exactitud y luego con la menor pérdida de validación.
+
+\subsection{Protocolo experimental}
+
+Se hicieron cuatro experimentos.
+\begin{enumerate}
+\item \textbf{Partición oficial.} Se entrenan los cinco métodos con 1\,024 puntos, usando solo coordenadas en las redes y las semillas 0, 5 y 95 del descriptor del dataset.
+\item \textbf{Número de puntos.} Se entrenan PointNet y PointNet++ con 1\,024, 2\,048, 4\,096 y 8\,192 puntos en la partición oficial.
+\item \textbf{Atributos del sensor.} Las tres redes reciben las coordenadas, la intensidad y los retornos en la partición oficial.
+\item \textbf{Validación cruzada repetida.} Los 152 árboles se dividen en cinco pliegues estratificados por especie, y en cada pliegue uno es la prueba y del resto se separa un 15\,\% estratificado como validación. El proceso se repite tres veces con particiones distintas, lo que da 15 entrenamientos por método y deja cada árbol tres veces en prueba, y se evalúan los dos bosques aleatorios y las tres redes con y sin atributos.
+\end{enumerate}
+
+Las métricas se calculan con la matriz de confusión $M$, donde $M_{ij}$ cuenta los árboles de la especie $i$ predichos como $j$.
+\begin{equation}
+\mathrm{Exactitud} = \frac{\sum_c M_{cc}}{\sum_{i,j} M_{ij}}, \quad F_{1,c} = \frac{2\,M_{cc}}{\sum_j M_{cj} + \sum_i M_{ic}}, \quad F_{1}^{\text{macro}} = \frac{1}{C}\sum_{c=1}^{C} F_{1,c}.
+\label{eq:metrics}
+\end{equation}
+La exactitud balanceada es el promedio de la exhaustividad por clase. En los experimentos 1 a 3 se reporta la media y la desviación estándar de las tres semillas, mientras que en el experimento 4 las predicciones de los cinco pliegues de cada repetición se juntan para calcular las métricas sobre los 152 árboles y se reporta la media y la desviación de las tres repeticiones. El intervalo de confianza de 95\,\% se obtiene con 2\,000 remuestreos \textit{bootstrap} de los árboles.
+
+\subsection{Pruebas estadísticas}
+
+Cada par de métodos del experimento 4 se compara con dos pruebas, y la primera es la prueba t corregida de Nadeau y Bengio, que usa el F1 de los $J=15$ pliegues. Como los conjuntos de entrenamiento se solapan entre pliegues, la prueba t normal subestima la varianza, y la corrección la multiplica por un factor que depende de la razón entre los tamaños de prueba y de entrenamiento \cite{nadeau2003inference}.
+\begin{equation}
+t = \frac{\bar{d}}{\sqrt{\left(\frac{1}{J} + \frac{n_{\text{prueba}}}{n_{\text{entren}}}\right)\hat{\sigma}_d^{2}}},
+\label{eq:nb}
+\end{equation}
+donde $\bar{d}$ y $\hat{\sigma}_d^2$ son la media y la varianza de las diferencias de F1 entre los dos métodos, y la razón entre los tamaños de prueba y de entrenamiento es 0.25. La prueba exacta de McNemar compara los aciertos sobre los mismos 152 árboles en cada repetición, usando solo los casos en que un método acierta y el otro falla \cite{dietterich1998tests}. Como hay 28 pares, los valores p de cada prueba se ajustan con el método de Holm \cite{holm1979simple}, y una diferencia se considera significativa si el valor ajustado es menor que 0.05.
+
+\subsection{Implementación y reproducibilidad}
+
+Todo el experimento está en un notebook que descarga los datos desde Zenodo, entrena los modelos y genera las tablas y figuras. Se ejecutó en Google Colab con una GPU NVIDIA T4, PyTorch 2.14.1 y Python 3.13, y todas las cifras de este documento salen del archivo de resumen que produce.
+
+%% =====================================================================
+\section{Resultados}
+\label{sec:resultados}
+
+\subsection{Partición oficial}
+
+La Tabla~\ref{tab:e1} resume el experimento 1, en el que DGCNN obtuvo el mejor F1 macro de prueba con 0.964, seguido por PointNet con 0.936, el bosque aleatorio sin escala con 0.906, el bosque aleatorio con escala con 0.864 y PointNet++ con 0.815. Con 26 árboles de prueba un error equivale a 3.8 puntos de exactitud, y DGCNN falló un árbol y PointNet dos en cada semilla. PointNet++ fue el método más inestable, con exactitudes de 0.846, 0.885 y 0.769 según la semilla. El F1 de validación de PointNet y DGCNN fue de 0.986, lo que muestra que 22 árboles de validación no bastan para distinguir entre modelos.
+
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Método & Exactitud prueba & F1 macro prueba & Exact. balanceada prueba & F1 macro validación & Parám. (M) \\
+\midrule
+\input{tablas/e1.tex}
+\end{tabular}}
+\caption{Experimento 1, partición oficial con 1\,024 puntos. Media y desviación de tres semillas sobre 26 árboles de prueba y 22 de validación.}
+\label{tab:e1}
+\end{table}
+
+
+\subsection{Número de puntos por árbol}
+
+La Tabla~\ref{tab:e2} muestra el experimento 2. PointNet se mantuvo entre 0.910 y 0.943 de F1 con cualquier número de puntos, mientras que PointNet++ mejoró de 0.815 con 1\,024 puntos a 0.842 con 4\,096 y cayó a 0.743 con 8\,192, con una desviación de 0.119 entre semillas. El costo también creció con los puntos, porque el tiempo medio de entrenamiento de PointNet pasó de 17 a 77 segundos y el de PointNet++ de 58 a 138 segundos.
+
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Red & Puntos & Exactitud prueba & F1 macro prueba & Exactitud validación & Tiempo (s) \\
+\midrule
+\input{tablas/e2.tex}
+\end{tabular}}
+\caption{Experimento 2, número de puntos por árbol en la partición oficial. Media y desviación de tres semillas. El tiempo es el promedio por entrenamiento en la GPU T4.}
+\label{tab:e2}
+\end{table}
+
+\subsection{Atributos del sensor}
+
+Con intensidad y retornos en la partición oficial, PointNet clasificó bien los 26 árboles de prueba en las tres semillas, con exactitud y F1 de 1.000. PointNet++ subió de 0.833 a 0.974 de exactitud y de 0.815 a 0.972 de F1, y DGCNN pasó de 0.962 a 0.974 de exactitud y de 0.964 a 0.969 de F1.
+
+\subsection{Validación cruzada repetida}
+
+La Tabla~\ref{tab:e4} y la Figura~\ref{fig:cv} presentan el experimento 4, que evalúa los 152 árboles tres veces y en el que las cifras bajan frente a la partición oficial en todos los métodos. PointNet con atributos obtuvo el mejor resultado, con 0.928 de exactitud y 0.914 de F1 macro, seguido muy de cerca por DGCNN con atributos, con 0.923 y 0.910. Después vienen PointNet++ con atributos y el bosque aleatorio con escala, ambos cerca de 0.85 de F1, y sin atributos DGCNN, PointNet y el bosque aleatorio sin escala quedaron entre 0.830 y 0.841, mientras que PointNet++ quedó último con 0.723.
+
+\begin{table}[!htbp]
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lccccc}
+\toprule
+Método & Exactitud & IC 95\,\% exactitud & F1 macro & IC 95\,\% F1 & Exact. balanceada \\
+\midrule
+\input{tablas/e4.tex}
+\end{tabular}}
+\caption{Experimento 4, validación cruzada estratificada de cinco pliegues repetida tres veces. Media y desviación entre repeticiones e intervalo de confianza \textit{bootstrap} de 95\,\%.}
+\label{tab:e4}
+\end{table}
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.52\textwidth]{figuras/cv_f1.pdf}
+\caption{F1 macro en validación cruzada con su intervalo de confianza de 95\,\%. Gris indica el bosque aleatorio, azul las redes con solo coordenadas y naranja las redes con atributos.}
+\label{fig:cv}
+\end{figure}
+
+La Tabla~\ref{tab:clases} muestra el F1 por especie, y \textit{Pyrus calleryana} fue la especie más difícil para todos los métodos, con valores entre 0.56 y 0.83. Los atributos mejoraron sobre todo esa especie y \textit{Tilia $\times$ europaea}, que en PointNet++ pasó de 0.62 a 0.92. El bosque aleatorio clasificó bien \textit{Aesculus hippocastanum} y \textit{Prunus serrulata}, pero tuvo su F1 más bajo en \textit{Tilia $\times$ europaea}, con 0.71 en la variante sin escala y 0.74 en la variante con escala.
+
+\begin{table}[!ht]
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+Método & \textit{A. hippocastanum} & \textit{P. serrulata} & \textit{P. calleryana} & \textit{S. alba} & \textit{T. platyphyllos} & \textit{T. $\times$ europaea} \\
+\midrule
+\input{tablas/clases_cv.tex}
+\end{tabular}}
+\caption{F1 por especie en validación cruzada, promedio de las tres repeticiones.}
+\label{tab:clases}
+\end{table}
+
+La Figura~\ref{fig:confusion} compara las matrices de confusión de PointNet con atributos y del bosque aleatorio sin escala, sumadas sobre las tres repeticiones. PointNet con atributos acertó 423 de 456 casos, y su error más frecuente fue confundir \textit{Pyrus calleryana} con \textit{Tilia platyphyllos}, en 8 de 45 casos. El bosque aleatorio sin escala acertó 386 casos, y sus errores se concentraron entre \textit{Aesculus hippocastanum} y \textit{Tilia $\times$ europaea}, con 22 confusiones en ambos sentidos, y en \textit{Salix alba} predicho como \textit{Aesculus hippocastanum}, con 11 casos.
+
+\begin{figure}[!ht]
+\centering
+\includegraphics[width=0.41\textwidth]{figuras/confusion_cv.pdf}
+\includegraphics[width=0.41\textwidth]{figuras/confusion_cv_rf.pdf}
+\caption{Matrices de confusión de PointNet con atributos y del bosque aleatorio sin escala en validación cruzada, con los conteos sumados de las tres repeticiones.}
+\label{fig:confusion}
+\end{figure}
+
+\subsection{Comparación estadística}
+
+La Tabla~\ref{tab:pares} resume las comparaciones más relevantes de los 28 pares, que están completas en el notebook. Con la prueba t corregida ninguna diferencia fue significativa después del ajuste de Holm, y el menor valor p sin ajustar fue 0.021, para PointNet++ frente a DGCNN con atributos. Con McNemar y Holm solo dos pares fueron significativos en las tres repeticiones, que son PointNet++ sin atributos frente a PointNet con atributos y frente a DGCNN con atributos.
+
+\begin{table}[!ht]
+\centering
+\footnotesize
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{llcccccc}
+\toprule
+Método A & Método B & Dif. F1 (A$-$B) & p t corregida & p Holm & Solo A / solo B & p Holm McNemar & Rep. signif. \\
+\midrule
+\input{tablas/pares.tex}
+\end{tabular}}
+\caption{Comparaciones seleccionadas en validación cruzada. La diferencia de F1 es la media de los 15 pliegues. \textit{Solo A / solo B} cuenta los casos que acierta un solo método, sumados en las tres repeticiones. La p de McNemar es la mayor de las tres repeticiones después de Holm, y la última columna dice en cuántas repeticiones fue menor que 0.05.}
+\label{tab:pares}
+\end{table}
+
+%% =====================================================================
+\section{Discusión}
+\label{sec:discusion}
+
+\subsection{La partición oficial sobrestima el desempeño}
+
+En la partición oficial DGCNN llegó a 0.964 de F1 y PointNet con atributos a 1.000, pero en validación cruzada las mismas configuraciones quedaron en 0.841 y 0.914. La caída fue de 0.124 en DGCNN, 0.103 en PointNet y 0.092 en PointNet++, mientras que el bosque aleatorio con escala solo bajó 0.012, lo que indica que los 26 árboles de prueba de la partición oficial resultaron más fáciles que el promedio del dataset y que un resultado perfecto en ese conjunto no permite afirmar que el problema esté resuelto. La validación cruzada mostró además diferencias de más de 0.3 de F1 entre pliegues para un mismo método, como PointNet con atributos, que fue de 0.679 a 1.000 según el pliegue. Esto coincide con la advertencia de Fassnacht et al. sobre los estudios que comparan algoritmos sin medir su incertidumbre \cite{fassnacht2016review}.
+
+\subsection{Los atributos del sensor aportan más que la arquitectura}
+
+En validación cruzada, agregar intensidad y retornos subió el F1 macro en 0.081 para PointNet, 0.069 para DGCNN y 0.135 para PointNet++, mientras que la diferencia entre PointNet y DGCNN fue de apenas 0.008 sin atributos y de 0.004 con ellos, así que la información del sensor pesó más que la elección de la red. Los retornos reflejan la porosidad de la copa y la intensidad depende de la reflectancia y la orientación de las hojas. Este resultado concuerda con Briechle et al., que mejoraron PointNet++ al agregar el ancho del pulso y datos multiespectrales \cite{briechle2020pointnetpp}, con Wang et al., que usan los atributos de cada punto en datos de baja densidad \cite{wang2024rse}, y con Murray et al. y Vahrenhold et al., que mejoran la clasificación al combinar la nube con descriptores derivados \cite{murray2025dualstream,vahrenhold2025mmtscnet}. Este trabajo encuentra el mismo efecto con LiDAR monoespectral, sin bandas adicionales.
+
+Esto también explica por qué el bosque aleatorio fue tan competitivo en el experimento 1, porque siempre recibió la intensidad y los retornos. Cuando las redes recibieron la misma información superaron al mejor bosque aleatorio por 0.06 de F1, aunque esa ventaja no fue significativa, y Taher et al. observaron algo parecido al encontrar que con LiDAR disperso el bosque aleatorio igualó al Point Transformer \cite{taher2026msals}.
+
+\subsection{Arquitectura y número de puntos}
+
+PointNet, la red más simple, igualó a DGCNN y superó a PointNet++ en todos los experimentos. Esto coincide con Hamdani et al., que encontraron a PointNet por encima de DGCNN y RandLA-Net en otro dataset urbano \cite{hamdani2026classification}, y con Qian et al., para quienes el entrenamiento pesa tanto como la arquitectura \cite{qian2022pointnext}.
+
+El experimento 2 aclara la comparación con el descriptor del dataset, que usó PointNet++ con 8\,192 puntos y reportó entre 0.94 y 0.96 de exactitud de validación con aumento por rotación \cite{hamdani2026urbantree3d}. Aquí PointNet++ alcanzó 0.939 de exactitud de validación con 2\,048 puntos, dentro de ese rango, pero bajó a 0.848 con 8\,192, porque con una mediana de 429 puntos por árbol casi todos los puntos de esa muestra son repeticiones. PointNet no depende de vecindarios locales y por eso no se vio afectado, y el rango útil coincide con el de Zhang et al., que encontraron el mejor muestreo entre 1\,024 y 2\,048 puntos \cite{zhang2025uav}.
+
+\subsection{Comparación con trabajos similares}
+
+La Tabla~\ref{tab:literatura} ubica estos resultados frente a trabajos cercanos, aunque las cifras no son directamente comparables porque cambian el sensor, las especies y el protocolo.
+
+\begin{table}[!htbp]
+\centering
+\scriptsize
+\renewcommand{\arraystretch}{1.1}
+\begin{tabular}{>{\raggedright\arraybackslash}p{2.1cm} >{\raggedright\arraybackslash}p{3.3cm} >{\raggedright\arraybackslash}p{1.0cm} >{\raggedright\arraybackslash}p{2.4cm} >{\raggedright\arraybackslash}p{2.8cm}}
+\toprule
+Trabajo & Datos & Especies & Mejor método & Resultado \\
+\midrule
+Hamdani et al. \cite{hamdani2026urbantree3d} & UrbanTree3D, LiDAR aéreo urbano & 6 & PointNet++, 8\,192 puntos & Exactitud de validación de 0.94 a 0.96 \\
+Hamdani et al. \cite{hamdani2026classification} & LiDAR multiespectral urbano & -- & PointNet & Exactitud de prueba de 0.821 \\
+Briechle et al. \cite{briechle2020pointnetpp} & LiDAR de UAV y multiespectral & 3 + muertos & PointNet++ & Exactitud de 0.902, RF 0.853 \\
+Taher et al. \cite{taher2026msals} & LiDAR aéreo multiespectral & -- & Point Transformer, RF con datos dispersos & Exactitud de 0.879, y 0.799 con datos dispersos \\
+Murray et al. \cite{murray2025dualstream} & LiDAR aéreo boreal, 16\,269 árboles & 4 & Red de doble flujo & F1 ponderado de 0.70 \\
+Puliti et al. \cite{puliti2025forspecies} & FOR-species20K, TLS, MLS y UAV & 33 & Modelos multivista & Exactitud promedio de 0.77 \\
+Este trabajo & UrbanTree3D, validación cruzada repetida & 6 & PointNet con atributos & Exactitud de 0.928, F1 macro de 0.914 \\
+\bottomrule
+\end{tabular}
+\caption{Resultados de trabajos similares. Un guion indica que el dato no se reporta en los resúmenes consultados.}
+\label{tab:literatura}
+\end{table}
+
+El resultado es alto frente a FOR-species20K o al bosque boreal de Murray et al., pero el problema es más fácil porque tiene seis especies urbanas bien separadas. Frente al descriptor de UrbanTree3D la diferencia principal es de protocolo, porque aquí se mide en prueba con validación cruzada y allí se midió en validación.
+
+\subsection{Errores y limitaciones}
+
+La confusión entre \textit{Aesculus hippocastanum} y \textit{Tilia $\times$ europaea}, que el descriptor del dataset también reporta \cite{hamdani2026urbantree3d}, se explica por copas de tamaño y densidad parecidos, y fue la confusión principal del bosque aleatorio, que las redes con atributos redujeron. \textit{Pyrus calleryana} se confundió con \textit{Tilia platyphyllos} porque ambas tienen copas compactas y ovaladas, y además es una de las especies con menos árboles.
+
+El trabajo tiene cuatro limitaciones. Con 152 árboles casi ninguna diferencia entre métodos es significativa, y las especies minoritarias tienen muy pocos ejemplos. Algunas nubes contienen puntos ajenos al árbol, que pueden ayudar o perjudicar según la especie. Todas las especies vienen de una sola ciudad y una sola campaña de vuelo, así que no se sabe cómo se transfiere el modelo a otro sensor o a otra ciudad. Por último, el experimento cubre solo la clasificación del árbol aislado y no evalúa la segmentación de la escena.
+
+%% =====================================================================
+\section{Conclusiones y trabajo futuro}
+\label{sec:conclusiones}
+
+Este trabajo comparó PointNet, PointNet++ y DGCNN con un bosque aleatorio para clasificar seis especies de árboles urbanos en UrbanTree3D, y sus resultados llevan a cuatro conclusiones.
+
+La primera es que la partición oficial del dataset es optimista, porque las mismas redes que alcanzaron entre 0.96 y 1.00 de F1 en sus 26 árboles de prueba bajaron entre 0.06 y 0.12 en validación cruzada repetida, así que con datasets tan pequeños conviene reportar validación cruzada repetida e intervalos de confianza.
+
+La segunda es que los atributos del LiDAR mejoraron las tres redes más que cualquier cambio de arquitectura, y PointNet con intensidad y retornos obtuvo el mejor resultado, con 0.928 de exactitud y 0.914 de F1 macro en validación cruzada.
+
+La tercera es que la red más simple fue suficiente, porque PointNet igualó a DGCNN y superó a PointNet++, que además fue sensible al sobremuestreo y tuvo su mejor resultado entre 2\,048 y 4\,096 puntos.
+
+La cuarta es que con 152 árboles las pruebas corregidas solo confirmaron que PointNet++ sin atributos es inferior a las dos mejores redes con atributos, mientras que la ventaja de las redes con atributos sobre el bosque aleatorio es consistente pero no significativa.
+
+Como trabajo futuro se propone ampliar el dataset o preentrenar con FOR-species20K para dar más potencia a las pruebas, probar arquitecturas recientes como PointNeXt con el mismo protocolo, limpiar los puntos ajenos a cada árbol e integrar la segmentación de árboles y la clasificación en un solo flujo sobre la escena completa.
+
+\section*{Disponibilidad del código y los datos}
+
+El notebook ejecutado y los resultados de cada entrenamiento están en \url{https://github.com/JDav19/arbolado-urbantree3d}. El dataset UrbanTree3D está disponible en Zenodo con DOI 10.5281/zenodo.19475932 bajo licencia CC BY 4.0.
+
+\renewcommand{\bibfont}{\footnotesize}
+\bibliographystyle{elsarticle-num}
+\bibliography{referencias}
+
+\end{document}
