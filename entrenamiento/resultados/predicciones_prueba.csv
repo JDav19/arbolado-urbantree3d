@@ -1,0 +1,27 @@
+Árbol,Especie real,Predicción PointNet,Predicción PointNet++,Predicción DGCNN,Redes que aciertan
+13902,A. hippocastanum,A. hippocastanum,A. hippocastanum,S. alba,2
+13905,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13436,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13854,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13440,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13402,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13855,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13417,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13412,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13423,A. hippocastanum,A. hippocastanum,A. hippocastanum,A. hippocastanum,3
+13778,P. serrulata,P. serrulata,P. serrulata,P. serrulata,3
+13777,P. serrulata,P. serrulata,P. serrulata,P. serrulata,3
+13702,P. calleryana,P. calleryana,P. calleryana,P. calleryana,3
+13623,P. calleryana,P. calleryana,T. platyphyllos,P. calleryana,2
+13626,P. calleryana,P. calleryana,P. calleryana,P. calleryana,3
+13578,S. alba,S. alba,S. alba,S. alba,3
+13594,S. alba,S. alba,S. alba,S. alba,3
+13593,S. alba,S. alba,S. alba,S. alba,3
+13607,S. alba,S. alba,S. alba,S. alba,3
+13534,T. platyphyllos,T. platyphyllos,T. platyphyllos,T. platyphyllos,3
+13557,T. platyphyllos,T. platyphyllos,T. platyphyllos,T. platyphyllos,3
+13548,T. platyphyllos,T. platyphyllos,T. platyphyllos,T. platyphyllos,3
+13539,T. platyphyllos,T. platyphyllos,T. platyphyllos,T. platyphyllos,3
+13952,T. × europaea,T. × europaea,T. × europaea,T. × europaea,3
+13942,T. × europaea,T. × europaea,T. × europaea,T. × europaea,3
+13945,T. × europaea,T. × europaea,T. × europaea,T. × europaea,3
